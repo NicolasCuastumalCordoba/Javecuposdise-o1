@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/AuthContext.tsx","./src/main.tsx","./src/supabase.ts","./src/pages/Buscar.tsx","./src/pages/Home.tsx","./src/pages/Perfil.tsx","./src/pages/Publicar.tsx","./src/pages/ViajeDetalle.tsx","./src/pages/Welcome.tsx"],"version":"5.9.3"}
