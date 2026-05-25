@@ -27,22 +27,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .select('*')
         .eq('id', uid)
         .single()
+      
       if (error) {
         if (error.code !== 'PGRST116') {
           console.error('Error cargando perfil:', error)
         }
         setProfile(null)
-      } else if (data) {
+        return null
+      } 
+      
+      if (data) {
         setProfile(data as Profile)
+        return data
       }
     } catch (err) {
       console.error('Excepción al cargar perfil:', err)
       setProfile(null)
     }
+    return null
   }
 
   async function refreshProfile() {
-    if (user) await loadProfile(user.id)
+    if (user) {
+      const profile = await loadProfile(user.id)
+      console.log('[DEBUG] Perfil refrescado:', profile)
+      return profile
+    }
   }
 
   useEffect(() => {

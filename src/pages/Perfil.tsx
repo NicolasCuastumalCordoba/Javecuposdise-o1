@@ -94,16 +94,31 @@ export default function Perfil() {
     if (!user) return
     setSaving(true)
     try {
-      const { error } = await supabase.from('profiles').update({ role: newRole }).eq('id', user.id)
-      if (error) throw error
+      console.log(`[DEBUG] Intentando cambiar rol a: ${newRole}`)
       
-      // Refrescar el contexto
+      // Actualizar el rol en la base de datos
+      const { data, error } = await supabase
+        .from('profiles')
+        .update({ role: newRole as any })
+        .eq('id', user.id)
+        .select()
+      
+      if (error) {
+        console.error('[ERROR] Supabase error:', error)
+        throw new Error(error.message || 'Error al actualizar rol en la BD')
+      }
+      
+      console.log('[DEBUG] Rol actualizado en BD:', data)
+      
+      // Refrescar el contexto para obtener el nuevo rol
       await refreshProfile()
+      
       toast.success(`Ahora eres ${newRole === 'driver' ? 'Conductor' : 'Pasajero'} ✓`)
       setChangingRole(false)
     } catch (err) {
       console.error('Error al cambiar rol:', err)
-      toast.error('Error al cambiar rol')
+      const errorMsg = err instanceof Error ? err.message : 'Error desconocido'
+      toast.error(`Error: ${errorMsg}`)
     } finally {
       setSaving(false)
     }
