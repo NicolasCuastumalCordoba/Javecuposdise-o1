@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
-import { supabase, Ride } from '../supabase'
+import { supabase, Ride, clearSupabaseCache } from '../supabase'
 import { toast } from 'sonner'
 
 function Stars({ rating }: { rating: number }) {
@@ -105,16 +105,33 @@ export default function Perfil() {
       
       if (error) {
         console.error('[ERROR] Supabase error:', error)
-        throw new Error(error.message || 'Error al actualizar rol en la BD')
+        
+        // Detectar error específico de schema cache
+        if (error.message?.includes('Could not find') && error.message?.includes('schema cache')) {
+          console.error('[CACHE ERROR] Schema cache desactualizado detectado')
+          toast.error('Limpiando caché... Por favor espera')
+          
+          // Limpiar caché y reintentar
+          try {
+            await clearSupabaseCache()
+            // La página se recargará automáticamente
+            return
+          } catch (cacheErr) {
+            console.error('[CACHE] Error al limpiar:', cacheErr)
+            toast.error('Por favor recarga la página (F5)')
+          }
+        } else {
+          throw new Error(error.message || 'Error al actualizar rol en la BD')
+        }
+      } else {
+        console.log('[DEBUG] Rol actualizado en BD:', data)
+        
+        // Refrescar el contexto para obtener el nuevo rol
+        await refreshProfile()
+        
+        toast.success(`Ahora eres ${newRole === 'driver' ? 'Conductor' : 'Pasajero'} ✓`)
+        setChangingRole(false)
       }
-      
-      console.log('[DEBUG] Rol actualizado en BD:', data)
-      
-      // Refrescar el contexto para obtener el nuevo rol
-      await refreshProfile()
-      
-      toast.success(`Ahora eres ${newRole === 'driver' ? 'Conductor' : 'Pasajero'} ✓`)
-      setChangingRole(false)
     } catch (err) {
       console.error('Error al cambiar rol:', err)
       const errorMsg = err instanceof Error ? err.message : 'Error desconocido'

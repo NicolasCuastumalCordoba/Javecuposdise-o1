@@ -58,3 +58,41 @@ export type RideRequest = {
   status: 'pending' | 'accepted' | 'rejected'
   rides?: Ride
 }
+
+/**
+ * Limpia el caché de esquema de Supabase y reinicia la sesión
+ * Útil cuando hay errores de "Could not find column in schema cache"
+ */
+export async function clearSupabaseCache() {
+  try {
+    console.log('[CACHE] Limpiando caché de Supabase...')
+    
+    // Obtener la sesión actual
+    const { data: { session } } = await supabase.auth.getSession()
+    
+    // Limpiar todos los tokens y caché del localStorage
+    const keys = Object.keys(window.localStorage)
+    keys.forEach(key => {
+      if (key.includes('sb-') || key.includes('supabase')) {
+        console.log(`[CACHE] Eliminando: ${key}`)
+        window.localStorage.removeItem(key)
+      }
+    })
+    
+    // Si había sesión activa, permitir que se reinicie
+    if (session) {
+      console.log('[CACHE] Sesión detectada, iniciando reinicio...')
+      // Dar tiempo para que se limpie
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      // La sesión se restablecerá automáticamente
+      window.location.reload()
+    } else {
+      console.log('[CACHE] Sin sesión activa, caché limpiado')
+    }
+    
+    return { success: true, message: 'Caché limpiado exitosamente' }
+  } catch (err) {
+    console.error('[CACHE] Error al limpiar:', err)
+    return { success: false, error: err instanceof Error ? err.message : 'Error desconocido' }
+  }
+}
