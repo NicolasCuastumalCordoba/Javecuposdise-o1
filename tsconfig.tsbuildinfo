@@ -1,0 +1,1 @@
+{"root":["./src/authcontext.tsx","./src/main.tsx","./src/supabase.ts","./src/pages/app.tsx","./src/pages/buscar.tsx","./src/pages/home.tsx","./src/pages/iot.tsx","./src/pages/perfil.tsx","./src/pages/publicar.tsx","./src/pages/resetpassword.tsx","./src/pages/viajedetalle.tsx","./src/pages/welcome.tsx"],"version":"5.9.3"}
