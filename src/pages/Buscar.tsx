@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase, Ride } from '../supabase'
+import { useAuth } from '../AuthContext'
 import { RideCard } from './Home'
 
 function timeAgo(dt: string) {
@@ -15,44 +16,131 @@ timeAgo // suppress unused warning
 
 export default function Buscar() {
   const nav = useNavigate()
+  const { user } = useAuth()
   const [query, setQuery] = useState('')
   const [rides, setRides] = useState<Ride[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'todos' | 'manana' | 'tarde' | 'noche'>('todos')
 
-  useEffect(() => {
-    setLoading(true)
-    let q = supabase
-      .from('rides')
-      .select('*, profiles(full_name, avatar_initials, rating, career)')
-      .eq('status', 'active')
-      .gte('departure_time', new Date().toISOString())
-      .order('departure_time', { ascending: true })
-
+  // Función para validar si un viaje cumple con los filtros actuales
+  const meetsFilters = (ride: Ride): boolean => {
+    if (ride.status !== 'active' || ride.driver_id === user?.id) return false
+    if (new Date(ride.departure_time) < new Date()) return false
+    
     if (query.trim()) {
-      q = q.or(`origin.ilike.%${query}%,destination.ilike.%${query}%`)
+      const q = query.toLowerCase()
+      const matches = ride.origin.toLowerCase().includes(q) || ride.destination.toLowerCase().includes(q)
+      if (!matches) return false
     }
 
-    const now = new Date()
-    if (filter === 'manana') {
-      const start = new Date(now); start.setHours(6, 0, 0, 0)
-      const end = new Date(now); end.setHours(12, 0, 0, 0)
-      q = q.gte('departure_time', start.toISOString()).lte('departure_time', end.toISOString())
-    } else if (filter === 'tarde') {
-      const start = new Date(now); start.setHours(12, 0, 0, 0)
-      const end = new Date(now); end.setHours(18, 0, 0, 0)
-      q = q.gte('departure_time', start.toISOString()).lte('departure_time', end.toISOString())
-    } else if (filter === 'noche') {
-      const start = new Date(now); start.setHours(18, 0, 0, 0)
-      const end = new Date(now); end.setHours(23, 59, 0, 0)
-      q = q.gte('departure_time', start.toISOString()).lte('departure_time', end.toISOString())
+    if (filter !== 'todos') {
+      const hour = new Date(ride.departure_time).getHours()
+      if (filter === 'manana' && (hour < 6 || hour >= 12)) return false
+      if (filter === 'tarde' && (hour < 12 || hour >= 18)) return false
+      if (filter === 'noche' && (hour < 18 || hour >= 24)) return false
     }
 
-    q.limit(30).then(({ data }) => {
-      setRides((data || []) as Ride[])
-      setLoading(false)
-    })
-  }, [query, filter])
+    return true
+  }
+
+  // Cargar viajes iniciales
+  useEffect(() => {
+    let isMounted = true
+    const abortController = new AbortController()
+
+    const loadRides = async () => {
+      try {
+        setLoading(true)
+        let q = supabase
+          .from('rides')
+          .select('*, profiles(full_name, avatar_initials, rating, career)')
+          .eq('status', 'active')
+          .gte('departure_time', new Date().toISOString())
+          .order('departure_time', { ascending: true })
+
+        // Excluir viajes del usuario actual
+        if (user?.id) {
+          q = q.neq('driver_id', user.id)
+        }
+
+        if (query.trim()) {
+          q = q.or(`origin.ilike.%${query}%,destination.ilike.%${query}%`)
+        }
+
+        const now = new Date()
+        if (filter === 'manana') {
+          const start = new Date(now); start.setHours(6, 0, 0, 0)
+          const end = new Date(now); end.setHours(12, 0, 0, 0)
+          q = q.gte('departure_time', start.toISOString()).lte('departure_time', end.toISOString())
+        } else if (filter === 'tarde') {
+          const start = new Date(now); start.setHours(12, 0, 0, 0)
+          const end = new Date(now); end.setHours(18, 0, 0, 0)
+          q = q.gte('departure_time', start.toISOString()).lte('departure_time', end.toISOString())
+        } else if (filter === 'noche') {
+          const start = new Date(now); start.setHours(18, 0, 0, 0)
+          const end = new Date(now); end.setHours(23, 59, 0, 0)
+          q = q.gte('departure_time', start.toISOString()).lte('departure_time', end.toISOString())
+        }
+
+        const { data, error } = await q.limit(30)
+
+        if (error) throw error
+        if (isMounted) setRides((data || []) as Ride[])
+      } catch (err) {
+        console.error('Error cargando viajes:', err)
+        if (isMounted) setRides([])
+      } finally {
+        if (isMounted) setLoading(false)
+      }
+    }
+
+    loadRides()
+
+    return () => {
+      isMounted = false
+      abortController.abort()
+    }
+  }, [query, filter, user?.id])
+
+  // Suscribción a cambios en tiempo real (solo una, reutilizable)
+  useEffect(() => {
+    if (!user?.id) return
+    let isMounted = true
+
+    const subscription = supabase
+      .channel(`rides_search_${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'rides' },
+        (payload) => {
+          if (!isMounted) return
+
+          if (payload.eventType === 'DELETE') {
+            setRides(prev => prev.filter(r => r.id !== payload.old.id))
+          } else if (payload.eventType === 'UPDATE') {
+            const updated = payload.new as Ride
+            if (meetsFilters(updated)) {
+              setRides(prev => prev.map(r => r.id === updated.id ? { ...r, ...updated } : r))
+            } else {
+              setRides(prev => prev.filter(r => r.id !== updated.id))
+            }
+          } else if (payload.eventType === 'INSERT') {
+            const newRide = payload.new as Ride
+            if (meetsFilters(newRide)) {
+              setRides(prev => [...prev, newRide].sort((a, b) => 
+                new Date(a.departure_time).getTime() - new Date(b.departure_time).getTime()
+              ))
+            }
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      isMounted = false
+      subscription.unsubscribe()
+    }
+  }, [user?.id, query, filter])
 
   return (
     <div>

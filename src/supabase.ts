@@ -3,7 +3,24 @@ import { createClient } from '@supabase/supabase-js'
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://bamnugjncvijvfpruyhk.supabase.co'
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJhbW51Z2puY3ZpanZmcHJ1eWhrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1MjkxNjQsImV4cCI6MjA5NDEwNTE2NH0.Ndy8BFnRc2TUWsCfc5J_sG94803xN-g2rxUoxto--40'
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+// Crear cliente Supabase con configuración optimizada para múltiples sesiones
+// Cada navegador/pestaña tendrá su propia sesión independiente
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    // Permite que cada pestaña/navegador maneje su propia sesión de forma independiente
+    persistSession: true,
+    // Sincroniza cambios de autenticación entre pestañas del mismo navegador (opcional)
+    detectSessionInUrl: true,
+    // Configurar storage para localStorage (por defecto)
+    storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+  },
+  // Configuración de red optimizada para confiabilidad
+  global: {
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  },
+})
 
 export type Profile = {
   id: string
@@ -11,11 +28,12 @@ export type Profile = {
   email: string
   career: string
   semester: number
-  role?: 'driver' | 'user'
+  is_driver: boolean
   phone?: string
   avatar_initials: string
   rating: number
   trips_count: number
+  role: 'driver' | 'user'
 }
 
 export type Ride = {

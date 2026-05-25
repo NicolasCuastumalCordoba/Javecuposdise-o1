@@ -34,17 +34,58 @@ export default function Home() {
   const greeting = hour < 12 ? 'Buenos días' : hour < 18 ? 'Buenas tardes' : 'Buenas noches'
 
   useEffect(() => {
-    supabase
-      .from('rides')
-      .select('*, profiles(full_name, avatar_initials, rating, career)')
-      .eq('status', 'active')
-      .gte('departure_time', new Date().toISOString())
-      .order('departure_time', { ascending: true })
-      .limit(5)
-      .then(({ data }) => {
-        setRides((data || []) as Ride[])
-        setLoading(false)
-      })
+    let isMounted = true
+
+    const loadRides = async () => {
+      try {
+        setLoading(true)
+        const { data, error } = await supabase
+          .from('rides')
+          .select('*, profiles(full_name, avatar_initials, rating, career)')
+          .eq('status', 'active')
+          .gte('departure_time', new Date().toISOString())
+          .order('departure_time', { ascending: true })
+          .limit(5)
+
+        if (error) throw error
+        if (isMounted) setRides((data || []) as Ride[])
+      } catch (err) {
+        console.error('Error cargando viajes:', err)
+        if (isMounted) toast.error('Error al cargar viajes')
+      } finally {
+        if (isMounted) setLoading(false)
+      }
+    }
+
+    loadRides()
+
+    // Suscribirse a cambios en tiempo real
+    const subscription = supabase
+      .channel('rides_home_updates')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'rides' },
+        (payload) => {
+          if (!isMounted) return
+          if (payload.eventType === 'DELETE') {
+            setRides(prev => prev.filter(r => r.id !== payload.old.id))
+          } else if (payload.eventType === 'UPDATE') {
+            setRides(prev => prev.map(r => r.id === payload.new.id ? { ...r, ...payload.new } : r))
+          } else if (payload.eventType === 'INSERT') {
+            if (payload.new.status === 'active' && payload.new.departure_time) {
+              setRides(prev => [...prev, payload.new as Ride].sort((a, b) => 
+                new Date(a.departure_time).getTime() - new Date(b.departure_time).getTime()
+              ).slice(0, 5))
+            }
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      isMounted = false
+      subscription.unsubscribe()
+    }
   }, [])
 
   return (
@@ -176,13 +217,47 @@ function PendingRequests({ userId }: { userId: string }) {
 
   useEffect(() => {
     if (!userId) return
-    supabase
-      .from('ride_requests')
-      .select('id, status, rides(origin, destination, departure_time)')
-      .eq('passenger_id', userId)
-      .eq('status', 'pending')
-      .limit(3)
-      .then(({ data }) => setRequests((data || []) as unknown as typeof requests))
+    let isMounted = true
+
+    const loadRequests = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('ride_requests')
+          .select('id, status, rides(origin, destination, departure_time)')
+          .eq('passenger_id', userId)
+          .eq('status', 'pending')
+          .limit(3)
+
+        if (error) throw error
+        if (isMounted) setRequests((data || []) as unknown as typeof requests)
+      } catch (err) {
+        console.error('Error cargando solicitudes:', err)
+      }
+    }
+
+    loadRequests()
+
+    // Suscribirse a cambios en solicitudes
+    const subscription = supabase
+      .channel(`requests_${userId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'ride_requests', filter: `passenger_id=eq.${userId}` },
+        (payload) => {
+          if (!isMounted) return
+          if (payload.eventType === 'UPDATE' && payload.new.status === 'pending') {
+            setRequests(prev => prev.map(r => r.id === payload.new.id ? { ...r, ...payload.new } : r))
+          } else if (payload.eventType === 'DELETE') {
+            setRequests(prev => prev.filter(r => r.id !== payload.old.id))
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      isMounted = false
+      subscription.unsubscribe()
+    }
   }, [userId])
 
   if (requests.length === 0) return null

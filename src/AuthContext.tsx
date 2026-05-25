@@ -21,12 +21,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   async function loadProfile(uid: string) {
-    const { data } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', uid)
-      .single()
-    if (data) setProfile(data as Profile)
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', uid)
+        .single()
+      if (error) {
+        if (error.code !== 'PGRST116') {
+          console.error('Error cargando perfil:', error)
+        }
+        setProfile(null)
+      } else if (data) {
+        setProfile(data as Profile)
+      }
+    } catch (err) {
+      console.error('Excepción al cargar perfil:', err)
+      setProfile(null)
+    }
   }
 
   async function refreshProfile() {
@@ -34,21 +46,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      const u = data.session?.user ?? null
-      setUser(u)
-      if (u) loadProfile(u.id).finally(() => setLoading(false))
-      else setLoading(false)
-    })
+    // Inicializar: obtener sesión actual si existe
+    // Cada navegador/pestaña tiene su propia sesión en localStorage
+    let isMounted = true
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    supabase.auth.getSession().then(({ data: { session }, error }) => {
+      if (!isMounted) return
+      
+      if (error) {
+        console.error('Error obteniendo sesión inicial:', error)
+        setUser(null)
+        setProfile(null)
+        setLoading(false)
+        return
+      }
+
       const u = session?.user ?? null
       setUser(u)
-      if (u) loadProfile(u.id)
-      else setProfile(null)
+      
+      if (u) {
+        loadProfile(u.id).finally(() => {
+          if (isMounted) setLoading(false)
+        })
+      } else {
+        setLoading(false)
+      }
     })
 
-    return () => subscription.unsubscribe()
+    // Escuchar cambios de autenticación (login, logout, etc.)
+    // Estos eventos son específicos para ESTA sesión
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!isMounted) return
+
+      const u = session?.user ?? null
+      setUser(u)
+      
+      if (u) {
+        await loadProfile(u.id)
+      } else {
+        setProfile(null)
+      }
+      
+      setLoading(false)
+    })
+
+    return () => {
+      isMounted = false
+      subscription?.unsubscribe()
+    }
   }, [])
 
   const signOut = async () => {
@@ -56,6 +101,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null)
     setProfile(null)
   }
+  
 
   return (
     <Ctx.Provider value={{ user, profile, loading, signOut, refreshProfile }}>

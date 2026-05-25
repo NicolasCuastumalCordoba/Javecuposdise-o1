@@ -30,41 +30,99 @@ export default function ViajeDetalle() {
 
   useEffect(() => {
     if (!id) return
-    supabase
-      .from('rides')
-      .select('*, profiles(full_name, avatar_initials, rating, career, trips_count)')
-      .eq('id', id)
-      .single()
-      .then(({ data }) => {
-        setRide(data as Ride)
-        setLoading(false)
-      })
+    let isMounted = true
+
+    const loadRide = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('rides')
+          .select('*, profiles(full_name, avatar_initials, rating, career, trips_count)')
+          .eq('id', id)
+          .single()
+
+        if (error) throw error
+        if (isMounted) {
+          setRide(data as Ride)
+          setLoading(false)
+        }
+      } catch (err) {
+        console.error('Error cargando viaje:', err)
+        if (isMounted) setLoading(false)
+      }
+    }
+
+    loadRide()
 
     if (user) {
-      supabase
-        .from('ride_requests')
-        .select('status')
-        .eq('ride_id', id)
-        .eq('passenger_id', user.id)
-        .maybeSingle()
-        .then(({ data }) => setMyRequest(data))
+      const loadMyRequest = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('ride_requests')
+            .select('status')
+            .eq('ride_id', id)
+            .eq('passenger_id', user.id)
+            .maybeSingle()
+
+          if (error) throw error
+          if (isMounted) setMyRequest(data)
+        } catch (err) {
+          console.error('Error cargando mi solicitud:', err)
+        }
+      }
+
+      loadMyRequest()
+    }
+
+    // Suscribirse a cambios en tiempo real del viaje Y de mis solicitudes
+    const subscription = supabase
+      .channel(`ride_${id}_updates`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'rides', filter: `id=eq.${id}` },
+        (payload) => {
+          if (isMounted) setRide(prev => prev ? { ...prev, ...payload.new } : null)
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'ride_requests', filter: `ride_id=eq.${id}` },
+        (payload) => {
+          if (isMounted && user?.id === (payload.new as any)?.passenger_id) {
+            setMyRequest({ status: (payload.new as any)?.status || (payload.old as any)?.status })
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      isMounted = false
+      subscription.unsubscribe()
     }
   }, [id, user])
 
   async function requestRide() {
     if (!user || !ride) return
     setRequesting(true)
-    const { error } = await supabase.from('ride_requests').insert({
-      ride_id: ride.id,
-      passenger_id: user.id,
-      status: 'pending',
-    })
-    if (error) {
-      if (error.code === '23505') toast.error('Ya solicitaste este viaje')
-      else toast.error('Error al solicitar', { description: error.message })
-    } else {
-      setMyRequest({ status: 'pending' })
-      toast.success('¡Solicitud enviada! ⏳', { description: 'El conductor revisará tu solicitud.' })
+    try {
+      const { error } = await supabase.from('ride_requests').insert({
+        ride_id: ride.id,
+        passenger_id: user.id,
+        status: 'pending',
+      })
+
+      if (error) {
+        if (error.code === '23505') {
+          toast.error('Ya solicitaste este viaje')
+        } else {
+          throw error
+        }
+      } else {
+        setMyRequest({ status: 'pending' })
+        toast.success('¡Solicitud enviada! ⏳', { description: 'El conductor revisará tu solicitud.' })
+      }
+    } catch (err) {
+      console.error('Error solicitando viaje:', err)
+      toast.error('Error al solicitar viaje')
     }
     setRequesting(false)
   }
@@ -72,11 +130,14 @@ export default function ViajeDetalle() {
   async function cancelRide() {
     if (!user || !ride || !isDriver) return
     setCancelling(true)
-    const { error } = await supabase.from('rides').update({ status: 'cancelled' }).eq('id', ride.id)
-    if (error) toast.error('Error al cancelar', { description: error.message })
-    else {
+    try {
+      const { error } = await supabase.from('rides').update({ status: 'cancelled' }).eq('id', ride.id)
+      if (error) throw error
       toast.success('Viaje cancelado')
       nav('/home')
+    } catch (err) {
+      console.error('Error cancelando viaje:', err)
+      toast.error('Error al cancelar viaje')
     }
     setCancelling(false)
   }
@@ -246,10 +307,54 @@ function PassengerList({ rideId }: { rideId: string }) {
 
   async function updateStatus(reqId: string, status: 'accepted' | 'rejected') {
     setUpdating(reqId)
-    const { error } = await supabase.from('ride_requests').update({ status }).eq('id', reqId)
-    if (!error) {
+    try {
+      // 1. Actualizar estado de la solicitud
+      const { error } = await supabase.from('ride_requests').update({ status }).eq('id', reqId)
+      if (error) throw error
+
+      // 2. Si es aceptar, restar un cupo
+      if (status === 'accepted') {
+        const { data: ride, error: rideError } = await supabase
+          .from('rides')
+          .select('seats_available')
+          .eq('id', rideId)
+          .single()
+        
+        if (rideError) throw rideError
+        
+        const newSeatsAvailable = Math.max(0, ride.seats_available - 1)
+        const { error: updateError } = await supabase
+          .from('rides')
+          .update({ seats_available: newSeatsAvailable })
+          .eq('id', rideId)
+        
+        if (updateError) throw updateError
+      }
+
+      // 3. Si es rechazar, sumar un cupo (opcional, pero consistente)
+      if (status === 'rejected') {
+        const { data: ride, error: rideError } = await supabase
+          .from('rides')
+          .select('seats_available, seats_total')
+          .eq('id', rideId)
+          .single()
+        
+        if (rideError) throw rideError
+        
+        const newSeatsAvailable = Math.min(ride.seats_total, ride.seats_available + 1)
+        const { error: updateError } = await supabase
+          .from('rides')
+          .update({ seats_available: newSeatsAvailable })
+          .eq('id', rideId)
+        
+        if (updateError) throw updateError
+      }
+
       setRequests(rs => rs.map(r => r.id === reqId ? { ...r, status } : r))
       toast.success(status === 'accepted' ? '✅ Pasajero aceptado' : '❌ Solicitud rechazada')
+    } catch (err) {
+      console.error('Error actualizando solicitud:', err)
+      toast.error('Error al actualizar solicitud')
     }
     setUpdating(null)
   }

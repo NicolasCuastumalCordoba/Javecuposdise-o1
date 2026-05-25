@@ -21,16 +21,60 @@ export default function Perfil() {
   const [editing, setEditing] = useState(false)
   const [phone, setPhone] = useState(profile?.phone || '')
   const [saving, setSaving] = useState(false)
+  const [changingRole, setChangingRole] = useState(false)
+  const [newRole, setNewRole] = useState<'driver' | 'user'>(profile?.role || 'user')
+
+  useEffect(() => {
+    if (profile?.role) {
+      setNewRole(profile.role)
+    }
+  }, [profile?.role])
 
   useEffect(() => {
     if (!user) return
-    supabase
-      .from('rides')
-      .select('*')
-      .eq('driver_id', user.id)
-      .order('departure_time', { ascending: false })
-      .limit(10)
-      .then(({ data }) => setMyRides((data || []) as Ride[]))
+    let isMounted = true
+
+    const loadMyRides = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('rides')
+          .select('*')
+          .eq('driver_id', user.id)
+          .order('departure_time', { ascending: false })
+          .limit(10)
+
+        if (error) throw error
+        if (isMounted) setMyRides((data || []) as Ride[])
+      } catch (err) {
+        console.error('Error cargando mis viajes:', err)
+      }
+    }
+
+    loadMyRides()
+
+    // Suscribirse a cambios en tiempo real
+    const subscription = supabase
+      .channel(`my_rides_${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'rides', filter: `driver_id=eq.${user.id}` },
+        (payload) => {
+          if (!isMounted) return
+          if (payload.eventType === 'INSERT') {
+            setMyRides(prev => [payload.new as Ride, ...prev].slice(0, 10))
+          } else if (payload.eventType === 'UPDATE') {
+            setMyRides(prev => prev.map(r => r.id === payload.new.id ? { ...r, ...payload.new } : r))
+          } else if (payload.eventType === 'DELETE') {
+            setMyRides(prev => prev.filter(r => r.id !== payload.old.id))
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      isMounted = false
+      subscription.unsubscribe()
+    }
   }, [user])
 
   async function savePhone() {
@@ -44,6 +88,25 @@ export default function Perfil() {
       setEditing(false)
     }
     setSaving(false)
+  }
+
+  async function changeRole() {
+    if (!user) return
+    setSaving(true)
+    try {
+      const { error } = await supabase.from('profiles').update({ role: newRole }).eq('id', user.id)
+      if (error) throw error
+      
+      // Refrescar el contexto
+      await refreshProfile()
+      toast.success(`Ahora eres ${newRole === 'driver' ? 'Conductor' : 'Pasajero'} ✓`)
+      setChangingRole(false)
+    } catch (err) {
+      console.error('Error al cambiar rol:', err)
+      toast.error('Error al cambiar rol')
+    } finally {
+      setSaving(false)
+    }
   }
 
   if (!profile) return (
@@ -132,6 +195,48 @@ export default function Perfil() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Cambiar rol */}
+        <div style={{ background: '#f0f7ff', borderRadius: '14px', padding: '16px', marginBottom: '14px', border: '1.5px solid #bfdbfe' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <h3 style={{ fontFamily: 'Syne, sans-serif', fontSize: '14px', fontWeight: '700', color: '#002855' }}>Mi rol</h3>
+            <button onClick={() => setChangingRole(!changingRole)} style={{ background: 'none', border: 'none', color: '#1a5eb8', fontSize: '13px', fontWeight: '600', cursor: 'pointer', fontFamily: 'Instrument Sans, sans-serif' }}>
+              {changingRole ? 'Cancelar' : '🔄 Cambiar'}
+            </button>
+          </div>
+
+          {changingRole ? (
+            <div>
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
+                <button type="button" onClick={() => setNewRole('user')} style={{
+                  flex: 1, padding: '12px', borderRadius: '10px', border: newRole === 'user' ? '2px solid #002855' : '1px solid #e5e7eb',
+                  background: newRole === 'user' ? '#002855' : '#fff', cursor: 'pointer', fontWeight: '600', fontSize: '13px',
+                  color: newRole === 'user' ? '#fff' : '#6b7280', transition: 'all 0.2s'
+                }}>
+                  👤 Pasajero
+                </button>
+                <button type="button" onClick={() => setNewRole('driver')} style={{
+                  flex: 1, padding: '12px', borderRadius: '10px', border: newRole === 'driver' ? '2px solid #002855' : '1px solid #e5e7eb',
+                  background: newRole === 'driver' ? '#002855' : '#fff', cursor: 'pointer', fontWeight: '600', fontSize: '13px',
+                  color: newRole === 'driver' ? '#fff' : '#6b7280', transition: 'all 0.2s'
+                }}>
+                  🚗 Conductor
+                </button>
+              </div>
+              <button className="btn btn-primary btn-full" onClick={changeRole} disabled={saving} style={{ height: '44px' }}>
+                {saving ? <span className="spinner" /> : `Cambiar a ${newRole === 'driver' ? 'Conductor' : 'Pasajero'}`}
+              </button>
+            </div>
+          ) : (
+            <div style={{ fontSize: '14px', color: '#374151', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '18px' }}>{profile.role === 'driver' ? '🚗' : '👤'}</span>
+              <span style={{ fontWeight: '600' }}>{profile.role === 'driver' ? 'Conductor' : 'Pasajero'}</span>
+              <span style={{ fontSize: '12px', color: '#9ca3af' }}>
+                {profile.role === 'driver' ? 'Puedes publicar viajes y también ser pasajero' : 'Puedes buscar y reservar viajes'}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* My rides */}
